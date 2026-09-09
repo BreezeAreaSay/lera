@@ -444,7 +444,7 @@
   var LS_GATE = "popchik_gate_ok";
   var LS_WHO = "popchik_who";
 
-  var state = { who: localStorage.getItem(LS_WHO) || null, db: null, activeTab: "chat" };
+  var state = { who: localStorage.getItem(LS_WHO) || null, activeTab: "chat" };
 
   var els = {
     gate: document.getElementById("screenGate"),
@@ -481,7 +481,7 @@
   function startApp(){
     goto(els.app);
     els.whoLabel.textContent = state.who;
-    initDb();
+    initStore();
   }
 
   els.gateForm.addEventListener("submit", function(e){
@@ -580,49 +580,41 @@
   }
   function other(who){ return who === "Лера" ? "Лёша" : "Лера"; }
 
-  function dbErrorMessage(err){
-    if (!err) return "Что-то пошло не так. Попробуй ещё раз.";
-    if (err.code === "quota_exceeded") return "Достигнут лимит хранилища. Напишите мне, чтобы разобраться.";
-    if (err.code === "resource_exhausted") return "Слишком много действий подряд — подожди немного.";
-    if (err.code === "revoked") return "Доступ к общей памяти прервался. Обнови страницу.";
-    return "Не получилось сохранить. Попробуй ещё раз.";
+  /* ================= LOCAL STORE =================
+     This build saves everything on THIS device (localStorage), so it
+     works with zero setup and no external dependency. It does not sync
+     between two different phones/computers yet — each device keeps its
+     own copy. See chat for how to upgrade this to real two-way sync. */
+  function lsGet(key, fallback){
+    try {
+      var raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch(e){ return fallback; }
   }
-
-  /* ================= DB INIT ================= */
-  function initDb(){
-    if (!window.claude || !window.claude.use){
-      state.db = null;
-      showDbUnavailable();
-      return;
+  function lsSet(key, value){
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch(e){
+      showToast("Хранилище на этом устройстве заполнено 😔 Освободите место (например, удалите старые фото) и попробуйте снова.");
+      return false;
     }
-    window.claude.use("db").then(function(db){
-      state.db = db;
-      if (!db){ showDbUnavailable(); return; }
-      wireChat(db);
-      wireList(db, "plans", "planScroll", "planState", "planForm", "planInput");
-      wireList(db, "wishes", "wishScroll", "wishState", "wishForm", "wishInput");
-      wireMemories(db);
-    }).catch(function(){
-      state.db = null;
-      showDbUnavailable();
-    });
   }
 
-  function showDbUnavailable(){
-    var msg = "Не получилось подключиться к общей памяти 😔 Попробуй обновить страницу.";
-    ["chatState","planState","wishState","memState"].forEach(function(id){
-      var n = document.getElementById(id);
-      if (n) n.textContent = msg;
-    });
+  function initStore(){
+    wireChat();
+    wireList("popchik_plans", false, "planScroll", "planForm", "planInput");
+    wireList("popchik_wishes", true, "wishScroll", "wishForm", "wishInput");
+    wireMemories();
   }
 
   /* ================= CHAT ================= */
-  function wireChat(db){
+  function wireChat(){
     var scroll = document.getElementById("chatScroll");
-    var stateMsg = document.getElementById("chatState");
     var form = document.getElementById("chatForm");
     var input = document.getElementById("chatInput");
     var sendBtn = document.getElementById("sendBtn");
+    var STORE_KEY = "popchik_chat_days";
 
     function autoGrow(){
       input.style.height = "auto";
@@ -639,60 +631,37 @@
       }
     });
 
-    form.addEventListener("submit", function(e){
-      e.preventDefault();
-      var text = input.value.trim();
-      if (!text) return;
-      sendBtn.disabled = true;
-      input.value = "";
-      autoGrow();
-      var dateKey = todayKey();
-      var ref = db.doc("chat_days/" + dateKey);
-      ref.get().then(function(snap){
-        var existing = snap.exists ? (snap.data().messages || []) : [];
-        var msg = { id: uid(), from: state.who, text: text, ts: Date.now(), reactions: {} };
-        return ref.set({ date: dateKey, messages: existing.concat([msg]) });
-      }).catch(function(err){
-        showToast(dbErrorMessage(err));
-        input.value = text;
-        autoGrow();
-      }).finally(function(){
-        sendBtn.disabled = !input.value.trim();
-      });
-    });
-
-    function toggleReaction(dateKey, msgId, key){
-      var ref = db.doc("chat_days/" + dateKey);
-      ref.get().then(function(snap){
-        if (!snap.exists) return;
-        var data = snap.data();
-        var messages = (data.messages || []).map(function(m){
-          if (m.id !== msgId) return m;
-          var reactions = Object.assign({}, m.reactions);
-          var list = (reactions[key] || []).slice();
-          var idx = list.indexOf(state.who);
-          if (idx >= 0) list.splice(idx, 1); else list.push(state.who);
-          reactions[key] = list;
-          return Object.assign({}, m, { reactions: reactions });
-        });
-        return ref.set(Object.assign({}, data, { messages: messages }));
-      }).catch(function(err){ showToast(dbErrorMessage(err)); });
-    }
-
     var REACTIONS = [
       { key:"popchik", label:"Попчик", emoji:"🍬" },
       { key:"pripopka", label:"Припопка", emoji:"💛" },
       { key:"otpopka", label:"Отпопка", emoji:"💢" }
     ];
 
-    function render(days){
-      scroll.innerHTML = "";
+    function toggleReaction(dateKey, msgId, key){
+      var days = lsGet(STORE_KEY, {});
+      if (!days[dateKey]) return;
+      days[dateKey] = days[dateKey].map(function(m){
+        if (m.id !== msgId) return m;
+        var reactions = Object.assign({}, m.reactions);
+        var arr = (reactions[key] || []).slice();
+        var idx = arr.indexOf(state.who);
+        if (idx >= 0) arr.splice(idx, 1); else arr.push(state.who);
+        reactions[key] = arr;
+        return Object.assign({}, m, { reactions: reactions });
+      });
+      lsSet(STORE_KEY, days);
+      render();
+    }
+
+    function render(){
+      var days = lsGet(STORE_KEY, {});
       var all = [];
-      days.forEach(function(day){
-        (day.messages || []).forEach(function(m){ all.push(Object.assign({}, m, { dateKey: day.date })); });
+      Object.keys(days).sort().forEach(function(dateKey){
+        (days[dateKey] || []).forEach(function(m){ all.push(Object.assign({}, m, { dateKey: dateKey })); });
       });
       all.sort(function(a,b){ return a.ts - b.ts; });
 
+      scroll.innerHTML = "";
       if (all.length === 0){
         scroll.appendChild(el("p", "state-msg", "Здесь пока тихо. Напиши первое сообщение! 💌"));
         return;
@@ -726,21 +695,26 @@
       requestAnimationFrame(function(){ scroll.scrollTop = scroll.scrollHeight; });
     }
 
-    db.collection("chat_days").orderBy("date", "desc").limit(60).onSnapshot(function(snap){
-      var days = snap.docs.map(function(d){ return d.data(); }).reverse();
-      render(days);
-    }, function(err){
-      stateMsg.textContent = dbErrorMessage(err);
-      scroll.innerHTML = "";
-      scroll.appendChild(stateMsg);
+    form.addEventListener("submit", function(e){
+      e.preventDefault();
+      var text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      autoGrow();
+      var dateKey = todayKey();
+      var days = lsGet(STORE_KEY, {});
+      var msg = { id: uid(), from: state.who, text: text, ts: Date.now(), reactions: {} };
+      days[dateKey] = (days[dateKey] || []).concat([msg]);
+      if (lsSet(STORE_KEY, days)) render();
+      sendBtn.disabled = !input.value.trim();
     });
+
+    render();
   }
 
   /* ================= PLANS / WISHES (shared list logic) ================= */
-  function wireList(db, collectionName, scrollId, stateId, formId, inputId){
-    var isWish = collectionName === "wishes";
+  function wireList(storeKey, isWish, scrollId, formId, inputId){
     var scroll = document.getElementById(scrollId);
-    var stateMsg = document.getElementById(stateId);
     var form = document.getElementById(formId);
     var input = document.getElementById(inputId);
     var addBtn = form.querySelector("button");
@@ -748,38 +722,14 @@
 
     input.addEventListener("input", function(){ addBtn.disabled = !input.value.trim(); });
 
-    form.addEventListener("submit", function(e){
-      e.preventDefault();
-      var text = input.value.trim();
-      if (!text) return;
-      input.value = "";
-      addBtn.disabled = true;
-      var data = { text: text, addedBy: state.who, createdAt: Date.now() };
-      data[doneField] = false;
-      db.collection(collectionName).add(data).catch(function(err){
-        showToast(dbErrorMessage(err));
-        input.value = text;
-        addBtn.disabled = false;
-      });
-    });
-
-    function toggle(id, current){
-      var patch = {};
-      patch[doneField] = !current;
-      db.doc(collectionName + "/" + id).update(patch).catch(function(err){ showToast(dbErrorMessage(err)); });
-    }
-    function remove(id){
-      db.doc(collectionName + "/" + id).delete().catch(function(err){ showToast(dbErrorMessage(err)); });
-    }
-
-    function render(snap){
+    function render(){
+      var items = lsGet(storeKey, []);
       scroll.innerHTML = "";
-      if (snap.empty){
+      if (items.length === 0){
         scroll.appendChild(el("p", "state-msg", isWish ? "Вишлист пуст — самое время помечтать ⭐" : "Планов пока нет — придумайте первый вместе"));
         return;
       }
-      snap.docs.forEach(function(doc){
-        var d = doc.data();
+      items.forEach(function(d){
         var done = !!d[doneField];
         var item = el("div", "list-item" + (isWish ? " wish" : "") + (done ? " done" : ""));
 
@@ -787,17 +737,28 @@
         toggleBtn.type = "button";
         toggleBtn.setAttribute("aria-label", isWish ? "Исполнено" : "Готово");
         toggleBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-        toggleBtn.addEventListener("click", function(){ toggle(doc.id, done); });
+        toggleBtn.addEventListener("click", function(){
+          var all = lsGet(storeKey, []).map(function(it){
+            if (it.id !== d.id) return it;
+            var patch = {};
+            patch[doneField] = !it[doneField];
+            return Object.assign({}, it, patch);
+          });
+          lsSet(storeKey, all);
+          render();
+        });
 
         var body = el("div", "body");
         body.appendChild(el("div", "text", d.text || ""));
-        var who = d.addedBy || "—";
-        body.appendChild(el("div", "meta", who + " · " + formatAgo(d.createdAt || 0)));
+        body.appendChild(el("div", "meta", (d.addedBy || "—") + " · " + formatAgo(d.createdAt || 0)));
 
         var delBtn = el("button", "del", "✕");
         delBtn.type = "button";
         delBtn.setAttribute("aria-label", "Удалить");
-        delBtn.addEventListener("click", function(){ remove(doc.id); });
+        delBtn.addEventListener("click", function(){
+          lsSet(storeKey, lsGet(storeKey, []).filter(function(it){ return it.id !== d.id; }));
+          render();
+        });
 
         item.appendChild(toggleBtn);
         item.appendChild(body);
@@ -806,14 +767,26 @@
       });
     }
 
-    db.collection(collectionName).orderBy("createdAt", "asc").limit(500).onSnapshot(render, function(err){
-      scroll.innerHTML = "";
-      scroll.appendChild(el("p", "state-msg", dbErrorMessage(err)));
+    form.addEventListener("submit", function(e){
+      e.preventDefault();
+      var text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      addBtn.disabled = true;
+      var entry = { id: uid(), text: text, addedBy: state.who, createdAt: Date.now() };
+      entry[doneField] = false;
+      var items = lsGet(storeKey, []);
+      items.push(entry);
+      lsSet(storeKey, items);
+      render();
     });
+
+    render();
   }
 
   /* ================= MEMORIES ================= */
-  function wireMemories(db){
+  function wireMemories(){
+    var storeKey = "popchik_memories";
     var grid = document.getElementById("memGrid");
     var addBtn = document.getElementById("memAddBtn");
     var fileInput = document.getElementById("memFileInput");
@@ -879,33 +852,32 @@
     uploadSave.addEventListener("click", function(){
       if (!pendingDataUrl) return;
       uploadSave.disabled = true;
-      db.collection("memories").add({
+      var items = lsGet(storeKey, []);
+      items.unshift({
+        id: uid(),
         image: pendingDataUrl,
         caption: uploadCaption.value.trim(),
         addedBy: state.who,
         createdAt: Date.now()
-      }).then(function(){
-        closeUpload();
-      }).catch(function(err){
-        showToast(dbErrorMessage(err));
-      }).finally(function(){
-        uploadSave.disabled = false;
       });
+      var ok = lsSet(storeKey, items);
+      uploadSave.disabled = false;
+      if (ok){ closeUpload(); render(); }
     });
 
     lightboxClose.addEventListener("click", function(){ lightbox.hidden = true; });
     lightbox.addEventListener("click", function(e){ if (e.target === lightbox) lightbox.hidden = true; });
 
-    function render(snap){
+    function render(){
+      var items = lsGet(storeKey, []);
       grid.innerHTML = "";
-      if (snap.empty){
+      if (items.length === 0){
         var msg = el("p", "state-msg", "Пока пусто — добавьте первое воспоминание!");
         msg.style.gridColumn = "1 / -1";
         grid.appendChild(msg);
         return;
       }
-      snap.docs.forEach(function(doc){
-        var d = doc.data();
+      items.forEach(function(d){
         var thumb = el("button", "mem-thumb");
         thumb.type = "button";
         var img = document.createElement("img");
@@ -923,12 +895,7 @@
       });
     }
 
-    db.collection("memories").orderBy("createdAt", "desc").limit(300).onSnapshot(render, function(err){
-      grid.innerHTML = "";
-      var msg = el("p", "state-msg", dbErrorMessage(err));
-      msg.style.gridColumn = "1 / -1";
-      grid.appendChild(msg);
-    });
+    render();
   }
 })();
 </script>
