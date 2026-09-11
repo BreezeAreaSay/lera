@@ -606,7 +606,15 @@
   /* Fill this in with the config object shown at the end of Firebase
      setup (Project settings -> your apps -> web app). Leave it null to
      keep the reliable zero-setup local-only mode. */
-  var FIREBASE_CONFIG = null;
+  var FIREBASE_CONFIG = {
+    apiKey: "AIzaSyD8UWHHuTIz0VcTh8afh-Z5aFSeLD69iY8",
+    authDomain: "addabbs-34f41.firebaseapp.com",
+    projectId: "addabbs-34f41",
+    storageBucket: "addabbs-34f41.firebasestorage.app",
+    messagingSenderId: "684776094572",
+    appId: "1:684776094572:web:959cffb940d214fc885149",
+    measurementId: "G-4JKYC7Y4K6"
+  };
 
   function initFirestore(){
     if (!FIREBASE_CONFIG || !window.firebase) return null;
